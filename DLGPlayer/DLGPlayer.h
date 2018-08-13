@@ -21,6 +21,7 @@ typedef void (^onPauseComplete)(void);
 @property (nonatomic) double duration;
 @property (nonatomic) BOOL opened;
 @property (nonatomic) BOOL playing;
+@property (nonatomic) BOOL seeking;
 @property (nonatomic) BOOL buffering;
 @property (nonatomic, strong) NSDictionary *metadata;
 

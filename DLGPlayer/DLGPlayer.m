@@ -239,10 +239,11 @@
 
 - (void)runFrameReader {
     @autoreleasepool {
-        while (self.playing) {
+        while (self.playing || self.seeking) {
             [self readFrame];
             if (self.requestSeek) {
                 [self seekPositionInFrameReader];
+                self.seeking = YES;
             } else {
                 [NSThread sleepForTimeInterval:1.5];
             }
@@ -259,7 +260,7 @@
     double tempDuration = 0;
     dispatch_time_t t = dispatch_time(DISPATCH_TIME_NOW, 0.02 * NSEC_PER_SEC);
     
-    while (self.playing && !self.decoder.isEOF && !self.requestSeek
+    while ((self.playing || self.seeking) && !self.decoder.isEOF && !self.requestSeek
            && (self.bufferedDuration + tempDuration) < self.maxBufferDuration) {
         @autoreleasepool {
             NSArray *fs = [self.decoder readFrames];
@@ -271,6 +272,10 @@
                     if (f.type == kDLGPlayerFrameTypeVideo) {
                         [tempVFrames addObject:f];
                         tempDuration += f.duration;
+
+                        if (self.seeking) {
+                            break;
+                        }
                     }
                 }
                 
@@ -286,10 +291,12 @@
                 }
             }
             {
-                for (DLGPlayerFrame *f in fs) {
-                    if (f.type == kDLGPlayerFrameTypeAudio) {
-                        [tempAFrames addObject:f];
-                        if (!self.decoder.hasVideo) tempDuration += f.duration;
+                if (!self.seeking) {
+                    for (DLGPlayerFrame *f in fs) {
+                        if (f.type == kDLGPlayerFrameTypeAudio) {
+                            [tempAFrames addObject:f];
+                            if (!self.decoder.hasVideo) tempDuration += f.duration;
+                        }
                     }
                 }
                 
@@ -361,7 +368,7 @@
 }
 
 - (void)render {
-    if (!self.playing) return;
+    if (!(self.playing || self.seeking)) return;
 
     BOOL eof = self.decoder.isEOF;
     BOOL noframes = ((self.decoder.hasVideo && self.vframes.count <= 0) ||
@@ -374,14 +381,16 @@
         return;
     }
     
-    if (noframes && !self.notifiedBufferStart) {
-        self.notifiedBufferStart = YES;
-        NSDictionary *userInfo = @{ DLGPlayerNotificationBufferStateKey : @(self.notifiedBufferStart) };
-        [[NSNotificationCenter defaultCenter] postNotificationName:DLGPlayerNotificationBufferStateChanged object:self userInfo:userInfo];
-    } else if (!noframes && self.notifiedBufferStart && self.bufferedDuration >= self.minBufferDuration) {
-        self.notifiedBufferStart = NO;
-        NSDictionary *userInfo = @{ DLGPlayerNotificationBufferStateKey : @(self.notifiedBufferStart) };
-        [[NSNotificationCenter defaultCenter] postNotificationName:DLGPlayerNotificationBufferStateChanged object:self userInfo:userInfo];
+    if (!self.seeking) {
+        if (noframes && !self.notifiedBufferStart) {
+            self.notifiedBufferStart = YES;
+            NSDictionary *userInfo = @{ DLGPlayerNotificationBufferStateKey : @(self.notifiedBufferStart) };
+            [[NSNotificationCenter defaultCenter] postNotificationName:DLGPlayerNotificationBufferStateChanged object:self userInfo:userInfo];
+        } else if (!noframes && self.notifiedBufferStart && self.bufferedDuration >= self.minBufferDuration) {
+            self.notifiedBufferStart = NO;
+            NSDictionary *userInfo = @{ DLGPlayerNotificationBufferStateKey : @(self.notifiedBufferStart) };
+            [[NSNotificationCenter defaultCenter] postNotificationName:DLGPlayerNotificationBufferStateChanged object:self userInfo:userInfo];
+        }
     }
     
     // Render if has picture
@@ -414,6 +423,7 @@
         }
     }
     [self.view render:frame];
+    self.seeking = NO;
     
     // Sync audio with video
     double syncTime = [self syncTime];
@@ -524,6 +534,22 @@
 - (void)setPosition:(double)position {
     self.requestSeekPosition = position;
     self.requestSeek = YES;
+
+    [self.vframes removeAllObjects];
+    [self.aframes removeAllObjects];
+
+    self.seeking = YES;
+
+    __weak typeof(self)weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf)strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+
+        [strongSelf render];
+        [strongSelf startFrameReaderThread];
+    });
 }
 
 - (double)position {
