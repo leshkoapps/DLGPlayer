@@ -26,7 +26,6 @@ static OSStatus audioUnitRenderCallback(void *inRefCon,
                                         AudioBufferList *ioData);
 
 @interface DLGPlayerAudioManager () {
-    BOOL _registeredKVO;
     BOOL _opened;
     BOOL _closing;
     BOOL _shouldPlayAfterInterruption;
@@ -51,7 +50,6 @@ static OSStatus audioUnitRenderCallback(void *inRefCon,
 }
 
 - (void)initVars {
-    _registeredKVO = NO;
     _opened = NO;
     _closing = NO;
     _shouldPlayAfterInterruption = NO;
@@ -66,6 +64,7 @@ static OSStatus audioUnitRenderCallback(void *inRefCon,
 
 - (void)dealloc {
     NSLog(@"DLGPlayerAudioManager dealloc");
+    [self unregisterNotifications];
     if (_audioData != NULL) {
         free(_audioData);
         _audioData = NULL;
@@ -149,7 +148,6 @@ static OSStatus audioUnitRenderCallback(void *inRefCon,
     
     [self registerNotifications];
     _sampleRate = sampleRate;
-    _volume = volume;
     _opened = YES;
     
     return YES;
@@ -397,25 +395,11 @@ static OSStatus audioUnitRenderCallback(void *inRefCon,
            selector:@selector(notifyAudioSessionInterruptionNotification:)
                name:AVAudioSessionInterruptionNotification
              object:nil];
-    
-    if (!_registeredKVO) {
-        AVAudioSession *session = [AVAudioSession sharedInstance];
-        [session addObserver:self
-                  forKeyPath:@"outputVolume"
-                     options:0
-                     context:nil];
-        _registeredKVO = YES;
-    }
 }
 
 - (void)unregisterNotifications {
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc removeObserver:self];
-    if (_registeredKVO) {
-        AVAudioSession *session = [AVAudioSession sharedInstance];
-        [session removeObserver:self forKeyPath:@"outputVolume"];
-        _registeredKVO = NO;
-    }
 }
 
 - (void)notifyAudioSessionRouteChanged:(NSNotification *)notif {
@@ -436,13 +420,6 @@ static OSStatus audioUnitRenderCallback(void *inRefCon,
             _shouldPlayAfterInterruption = NO;
             [self play];
         }
-    }
-}
-
-- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
-    AVAudioSession *session = [AVAudioSession sharedInstance];
-    if (object == session && [keyPath isEqualToString:@"outputVolume"]) {
-        self.volume = session.outputVolume;
     }
 }
 

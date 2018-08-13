@@ -10,22 +10,23 @@
 
 @interface DLGPlayerDecoder : NSObject
 
-@property (nonatomic) BOOL isYUV;
-@property (nonatomic) BOOL hasVideo;
-@property (nonatomic) BOOL hasAudio;
-@property (nonatomic) BOOL hasPicture;
-@property (nonatomic) BOOL isEOF;
+@property (atomic) BOOL isYUV;
+@property (atomic) BOOL hasVideo;
+@property (atomic) BOOL hasAudio;
+@property (atomic) BOOL hasPicture;
+@property (atomic, readonly) BOOL isEOF;
 
-@property (nonatomic) double rotation;
-@property (nonatomic) double duration;
-@property (nonatomic, strong) NSDictionary *metadata;
+@property (atomic) double rotation;
+@property (atomic) double duration;
+@property (atomic, strong) NSDictionary *metadata;
 
-@property (nonatomic) UInt32 audioChannels;
-@property (nonatomic) float audioSampleRate;
+@property (atomic) UInt32 audioChannels;
+@property (atomic) float audioSampleRate;
 
-@property (nonatomic) double videoFPS;
-@property (nonatomic) double videoTimebase;
-@property (nonatomic) double audioTimebase;
+@property (atomic) double videoFPS;
+@property (atomic) double videoTimebase;
+@property (atomic) double audioTimebase;
+@property (atomic, readonly) BOOL opened;
 
 - (BOOL)open:(NSString *)url error:(NSError **)error;
 - (void)close;

@@ -17,27 +17,35 @@
 
 @interface DLGPlayer ()
 
-@property (nonatomic, strong) DLGPlayerView *view;
-@property (nonatomic, strong) DLGPlayerDecoder *decoder;
-@property (nonatomic, strong) DLGPlayerAudioManager *audio;
+@property (atomic, strong) DLGPlayerView *view;
+@property (atomic, strong) DLGPlayerDecoder *decoder;
+@property (atomic, strong) DLGPlayerAudioManager *audio;
 
-@property (nonatomic, strong) NSMutableArray *vframes;
-@property (nonatomic, strong) NSMutableArray *aframes;
-@property (nonatomic, strong) DLGPlayerAudioFrame *playingAudioFrame;
-@property (nonatomic) NSUInteger playingAudioFrameDataPosition;
-@property (nonatomic) double bufferedDuration;
-@property (nonatomic) double mediaPosition;
-@property (nonatomic) double mediaSyncTime;
-@property (nonatomic) double mediaSyncPosition;
+@property (atomic, strong) NSMutableArray *vframes;
+@property (atomic, strong) NSMutableArray *aframes;
+@property (atomic, strong) DLGPlayerAudioFrame *playingAudioFrame;
+@property (atomic) NSUInteger playingAudioFrameDataPosition;
+@property (atomic) double bufferedDuration;
+@property (atomic) double mediaPosition;
+@property (atomic) double mediaSyncTime;
+@property (atomic) double mediaSyncPosition;
 
-@property (nonatomic, strong) NSThread *frameReaderThread;
-@property (nonatomic) BOOL notifiedBufferStart;
-@property (nonatomic) BOOL requestSeek;
-@property (nonatomic) double requestSeekPosition;
-@property (nonatomic) BOOL opening;
+@property (atomic, strong) NSThread *frameReaderThread;
+@property (atomic) BOOL notifiedBufferStart;
+@property (atomic) BOOL requestSeek;
+@property (atomic) double requestSeekPosition;
+@property (atomic) BOOL opening;
+@property (atomic) BOOL opened;
+@property (atomic) BOOL playing;
+@property (atomic) BOOL buffering;
+@property (atomic) double duration;
+@property (atomic, strong) NSDictionary *metadata;
 
-@property (nonatomic, strong) dispatch_semaphore_t vFramesLock;
-@property (nonatomic, strong) dispatch_semaphore_t aFramesLock;
+@property (atomic, strong) dispatch_semaphore_t vFramesLock;
+@property (atomic, strong) dispatch_semaphore_t aFramesLock;
+
+@property (atomic, strong) DLGPlayerVoidCompletionBlock seekCompletion;
+
 
 @end
 
@@ -112,6 +120,11 @@
 }
 
 - (void)open:(NSString *)url {
+    [self open:url completion:nil];
+}
+
+- (void)open:(NSString *)url completion:(DLGPlayerVoidCompletionBlock)completion{
+    
     __weak typeof(self)weakSelf = self;
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -133,6 +146,9 @@
         if (![strongSelf.decoder open:url error:&error]) {
             strongSelf.opening = NO;
             [strongSelf handleError:error];
+            if(completion){
+                completion();
+            }
             return;
         }
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -158,17 +174,30 @@
             
             strongSelf.opened = YES;
             [[NSNotificationCenter defaultCenter] postNotificationName:DLGPlayerNotificationOpened object:strongSelf];
+            
+            if(completion){
+                completion();
+            }
         });
     });
 }
 
 - (void)close {
+    [self close:nil];
+}
+
+- (void)close:(DLGPlayerVoidCompletionBlock)completion{
+
     if (!self.opened && !self.opening) {
         [[NSNotificationCenter defaultCenter] postNotificationName:DLGPlayerNotificationClosed object:self];
+        if(completion){
+            completion();
+        }
         return;
     }
 
     [self pause];
+    [self.frameReaderThread cancel];
     [self.decoder prepareClose];
 
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
@@ -182,7 +211,9 @@
             return;
         }
 
-        if (strongSelf.opening || strongSelf.buffering) return;
+        if (strongSelf.opening || strongSelf.buffering || strongSelf.requestSeek){
+            return;
+        }
         [strongSelf.decoder close];
 
         NSArray<NSError *> *errors = nil;
@@ -194,13 +225,29 @@
                 [strongSelf handleError:error];
             }
         }
+        
+        if(completion){
+            completion();
+        }
+        
         dispatch_cancel(timer);
+        
     });
     dispatch_resume(timer);
 }
 
 - (void)play {
-    if (!self.opened || self.playing) return;
+    [self play:nil];
+}
+
+- (void)play:(DLGPlayerVoidCompletionBlock)completion{
+
+    if (!self.opened || self.playing) {
+        if(completion){
+            completion();
+        }
+        return;
+    }
     
     self.playing = YES;
     __weak typeof(self)weakSelf = self;
@@ -213,6 +260,10 @@
 
         [strongSelf render];
         [strongSelf startFrameReaderThread];
+        
+        if(completion){
+            completion();
+        }
     });
 
     NSError *error = nil;
@@ -222,28 +273,37 @@
 }
 
 - (void)pause {
+    [self pause:nil];
+}
+
+- (void)pause:(DLGPlayerVoidCompletionBlock)completion{
     self.playing = NO;
     NSError *error = nil;
 
     if (![self.audio pause:&error]) {
         [self handleError:error];
     }
+
+    if(completion){
+        completion();
+    }
+    
 }
 
 - (void)startFrameReaderThread {
     if (self.frameReaderThread == nil) {
         self.frameReaderThread = [[NSThread alloc] initWithTarget:self selector:@selector(runFrameReader) object:nil];
+        self.frameReaderThread.qualityOfService = NSQualityOfServiceUserInitiated;
         [self.frameReaderThread start];
     }
 }
 
 - (void)runFrameReader {
     @autoreleasepool {
-        while (self.playing || self.seeking) {
+        while (self.playing) {
             [self readFrame];
             if (self.requestSeek) {
                 [self seekPositionInFrameReader];
-                self.seeking = YES;
             } else {
                 [NSThread sleepForTimeInterval:1.5];
             }
@@ -260,7 +320,7 @@
     double tempDuration = 0;
     dispatch_time_t t = dispatch_time(DISPATCH_TIME_NOW, 0.02 * NSEC_PER_SEC);
     
-    while ((self.playing || self.seeking) && !self.decoder.isEOF && !self.requestSeek
+    while ((self.playing) && !self.decoder.isEOF && !self.requestSeek
            && (self.bufferedDuration + tempDuration) < self.maxBufferDuration) {
         @autoreleasepool {
             NSArray *fs = [self.decoder readFrames];
@@ -272,10 +332,6 @@
                     if (f.type == kDLGPlayerFrameTypeVideo) {
                         [tempVFrames addObject:f];
                         tempDuration += f.duration;
-
-                        if (self.seeking) {
-                            break;
-                        }
                     }
                 }
                 
@@ -291,12 +347,10 @@
                 }
             }
             {
-                if (!self.seeking) {
-                    for (DLGPlayerFrame *f in fs) {
-                        if (f.type == kDLGPlayerFrameTypeAudio) {
-                            [tempAFrames addObject:f];
-                            if (!self.decoder.hasVideo) tempDuration += f.duration;
-                        }
+                for (DLGPlayerFrame *f in fs) {
+                    if (f.type == kDLGPlayerFrameTypeAudio) {
+                        [tempAFrames addObject:f];
+                        if (!self.decoder.hasVideo) tempDuration += f.duration;
                     }
                 }
                 
@@ -365,10 +419,16 @@
     self.requestSeek = NO;
     self.mediaSyncTime = 0;
     self.mediaPosition = self.requestSeekPosition;
+    
+    if(self.seekCompletion){
+        self.seekCompletion();
+        self.seekCompletion = nil;
+    }
+    
 }
 
 - (void)render {
-    if (!(self.playing || self.seeking)) return;
+    if (!(self.playing)) return;
 
     BOOL eof = self.decoder.isEOF;
     BOOL noframes = ((self.decoder.hasVideo && self.vframes.count <= 0) ||
@@ -381,17 +441,17 @@
         return;
     }
     
-    if (!self.seeking) {
-        if (noframes && !self.notifiedBufferStart) {
-            self.notifiedBufferStart = YES;
-            NSDictionary *userInfo = @{ DLGPlayerNotificationBufferStateKey : @(self.notifiedBufferStart) };
-            [[NSNotificationCenter defaultCenter] postNotificationName:DLGPlayerNotificationBufferStateChanged object:self userInfo:userInfo];
-        } else if (!noframes && self.notifiedBufferStart && self.bufferedDuration >= self.minBufferDuration) {
-            self.notifiedBufferStart = NO;
-            NSDictionary *userInfo = @{ DLGPlayerNotificationBufferStateKey : @(self.notifiedBufferStart) };
-            [[NSNotificationCenter defaultCenter] postNotificationName:DLGPlayerNotificationBufferStateChanged object:self userInfo:userInfo];
-        }
+
+    if (noframes && !self.notifiedBufferStart) {
+        self.notifiedBufferStart = YES;
+        NSDictionary *userInfo = @{ DLGPlayerNotificationBufferStateKey : @(self.notifiedBufferStart) };
+        [[NSNotificationCenter defaultCenter] postNotificationName:DLGPlayerNotificationBufferStateChanged object:self userInfo:userInfo];
+    } else if (!noframes && self.notifiedBufferStart && self.bufferedDuration >= self.minBufferDuration) {
+        self.notifiedBufferStart = NO;
+        NSDictionary *userInfo = @{ DLGPlayerNotificationBufferStateKey : @(self.notifiedBufferStart) };
+        [[NSNotificationCenter defaultCenter] postNotificationName:DLGPlayerNotificationBufferStateChanged object:self userInfo:userInfo];
     }
+    
     
     // Render if has picture
     if (self.decoder.hasPicture && self.vframes.count > 0) {
@@ -423,7 +483,6 @@
         }
     }
     [self.view render:frame];
-    self.seeking = NO;
     
     // Sync audio with video
     double syncTime = [self syncTime];
@@ -531,14 +590,14 @@
     return self.view;
 }
 
-- (void)setPosition:(double)position {
+- (void)setPosition:(double)position completion:(DLGPlayerVoidCompletionBlock)completion{
+    
+    self.seekCompletion = completion;
     self.requestSeekPosition = position;
     self.requestSeek = YES;
-
+    
     [self.vframes removeAllObjects];
     [self.aframes removeAllObjects];
-
-    self.seeking = YES;
 
     __weak typeof(self)weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -546,10 +605,14 @@
         if (!strongSelf) {
             return;
         }
-
+        
         [strongSelf render];
         [strongSelf startFrameReaderThread];
     });
+}
+    
+- (void)setPosition:(double)position {
+    [self setPosition:position completion:nil];
 }
 
 - (double)position {

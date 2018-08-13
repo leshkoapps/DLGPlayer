@@ -18,6 +18,7 @@
 #import <libavutil/display.h>
 #import <libavutil/eval.h>
 #import <libswscale/swscale.h>
+#import <libavfilter/avfilter.h>
 #import <libswresample/swresample.h>
 #import <Accelerate/Accelerate.h>
 
@@ -53,15 +54,32 @@ static int interruptCallback(void *context) {
     int m_nAudioSwrBufferSize;
 }
 
+@property (atomic) BOOL isEOF;
+@property (atomic) BOOL opened;
+
 @end
 
 @implementation DLGPlayerDecoder
 
++ (void)initialize {
+    avformat_network_init();
+}
+
 - (void)dealloc {
     NSLog(@"DLGPlayerDecoder dealloc");
+    [self close];
 }
 
 - (BOOL)open:(NSString *)url error:(NSError **)error {
+    
+    if (self.opened) {
+        [DLGPlayerUtils createError:error
+                         withDomain:DLGPlayerErrorDomainDecoder
+                            andCode:DLGPlayerErrorCodeCannotOpenInput
+                         andMessage:[DLGPlayerUtils localizedString:@"DLG_PLAYER_ALREADY_OPENED"]];
+        return NO;
+    }
+    
     if (url == nil || url.length == 0) {
         [DLGPlayerUtils createError:error
                          withDomain:DLGPlayerErrorDomainDecoder
@@ -69,12 +87,8 @@ static int interruptCallback(void *context) {
                          andMessage:[DLGPlayerUtils localizedString:@"DLG_PLAYER_STRINGS_INVALID_URL"]];
         return NO;
     }
-    
-    // 1. Init
-    av_register_all();
-    avformat_network_init();
-    
-    // 2. Open Input
+
+    // Open Input
     AVFormatContext *fmtctx = NULL;
     int ret = avformat_open_input(&fmtctx, [url UTF8String], NULL, NULL);
     if (ret != 0) {
@@ -90,7 +104,7 @@ static int interruptCallback(void *context) {
     av_dump_format(fmtctx, 0, [url UTF8String], 0);
 #endif
     
-    // 3. Analyze Stream Info
+    // Analyze Stream Info
     ret = avformat_find_stream_info(fmtctx, NULL);
     if (ret < 0) {
         avformat_close_input(&fmtctx);
@@ -101,7 +115,7 @@ static int interruptCallback(void *context) {
         return NO;
     }
     
-    // 4. Find Video Stream
+    // Find Video Stream
     AVFrame *vframe = NULL;
     AVFrame *vswsframe = NULL;
     AVCodecContext *vcodectx = NULL;
@@ -135,7 +149,7 @@ static int interruptCallback(void *context) {
         }
     }
     
-    // 5. Find Audio Stream
+    // Find Audio Stream
     AVFrame *aframe = NULL;
     AVCodecContext *acodectx = NULL;
     SwrContext *aswrctx = NULL;
@@ -172,7 +186,7 @@ static int interruptCallback(void *context) {
         }
     }
     
-    // 6. Finish Init
+    // Finish
     if (vstream < 0 && astream < 0) {
         avformat_close_input(&fmtctx);
         [DLGPlayerUtils createError:error
@@ -209,14 +223,35 @@ static int interruptCallback(void *context) {
     AVIOInterruptCB icb = {interruptCallback, NULL};
     fmtctx->interrupt_callback = icb;
     
+    self.opened = YES;
+    
     return YES;
 }
 
 - (NSDictionary *)findMetadata:(AVFormatContext *)fmtctx {
-    if (fmtctx == NULL || fmtctx->metadata == NULL) return nil;
+    if (fmtctx == NULL) return nil;
     
     NSMutableDictionary *md = [NSMutableDictionary dictionary];
+    
     AVDictionary *metadata = fmtctx->metadata;
+    NSDictionary *commonMeta = [self dumpMetadata:metadata];
+    if(commonMeta.count>0){
+        [md addEntriesFromDictionary:commonMeta];
+    }
+    
+    for (int i = 0; i < fmtctx->nb_streams; i++){
+        AVDictionary *metadata = fmtctx->streams[i]->metadata;
+        NSDictionary *streamMeta = [self dumpMetadata:metadata];
+        if(streamMeta.count>0){
+            [md addEntriesFromDictionary:streamMeta];
+        }
+    }
+
+    return md;
+}
+
+- (NSDictionary *)dumpMetadata:(AVDictionary *)metadata{
+    NSMutableDictionary *md = [NSMutableDictionary dictionary];
     AVDictionaryEntry *entry = av_dict_get(metadata, "", NULL, AV_DICT_IGNORE_SUFFIX);
     while (entry != NULL) {
         NSString *key = [NSString stringWithCString:entry->key encoding:NSUTF8StringEncoding];
@@ -224,7 +259,6 @@ static int interruptCallback(void *context) {
         if (key != nil && value != nil) md[key] = value;
         entry = av_dict_get(metadata, "", entry, AV_DICT_IGNORE_SUFFIX);
     }
-    
     return md;
 }
 
@@ -317,18 +351,20 @@ static int interruptCallback(void *context) {
 }
 
 - (void)close {
-    [self flush:m_pVideoCodecContext frame:m_pVideoFrame];
-    [self flush:m_pAudioCodecContext frame:m_pAudioFrame];
-    [self closeVideoStream];
-    [self closeAudioStream];
-    [self closePictureStream];
-    if (m_pFormatContext != NULL) avformat_close_input(&m_pFormatContext);
-    avformat_network_deinit();
-    self.isYUV = NO;
-    self.hasVideo = NO;
-    self.hasAudio = NO;
-    self.hasPicture = NO;
-    self.isEOF = NO;
+    if(self.opened){
+        [self flush:m_pVideoCodecContext frame:m_pVideoFrame];
+        [self flush:m_pAudioCodecContext frame:m_pAudioFrame];
+        [self closeVideoStream];
+        [self closeAudioStream];
+        [self closePictureStream];
+        if (m_pFormatContext != NULL) avformat_close_input(&m_pFormatContext);
+        self.isYUV = NO;
+        self.hasVideo = NO;
+        self.hasAudio = NO;
+        self.hasPicture = NO;
+        self.isEOF = NO;
+        self.opened = NO;
+    }
 }
 
 - (void)closeVideoStream {
@@ -592,7 +628,8 @@ static int interruptCallback(void *context) {
 
 #pragma mark - Seek
 - (void)seek:(double)position {
-    _isEOF = NO;
+    if ((m_nVideoStream < 0 && m_nAudioStream < 0 ) || _isEOF || m_pFormatContext==NULL) return;
+
     if (_hasVideo) {
         NSTimeInterval start = [NSDate timeIntervalSinceReferenceDate];
         int64_t ts = (int64_t)(position / _videoTimebase);

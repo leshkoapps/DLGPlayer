@@ -12,8 +12,7 @@ typedef void(^DLGPlayerAudioManagerFrameReaderBlock)(float *data, UInt32 num, UI
 
 @interface DLGPlayerAudioManager : NSObject
 
-@property (nonatomic, copy) DLGPlayerAudioManagerFrameReaderBlock frameReaderBlock;
-@property (nonatomic) float volume;
+@property (atomic, copy) DLGPlayerAudioManagerFrameReaderBlock frameReaderBlock;
 
 - (BOOL)open:(NSError **)error;
 - (BOOL)play;

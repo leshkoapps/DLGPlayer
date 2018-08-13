@@ -11,8 +11,8 @@
 
 #define DLGPlayerLocalizedStringTable   @"DLGPlayerStrings"
 
-#define DLGPlayerMinBufferDuration  2
-#define DLGPlayerMaxBufferDuration  5
+#define DLGPlayerMinBufferDuration  1
+#define DLGPlayerMaxBufferDuration  3
 
 #define DLGPlayerErrorDomainDecoder         @"DLGPlayerDecoder"
 #define DLGPlayerErrorDomainAudioManager    @"DLGPlayerAudioManager"
