@@ -71,6 +71,7 @@ static int interruptCallback(void *context) {
     }
     
     // 1. Init
+    av_register_all();
     avformat_network_init();
     
     // 2. Open Input
