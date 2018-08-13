@@ -24,13 +24,14 @@
 
 #define DLGPlayerIOTimeout 30
 
-static NSTimeInterval g_dIOStartTime = 0;
-static bool g_bPrepareClose = FALSE;
-
 static int interruptCallback(void *context) {
-    NSTimeInterval t = [NSDate timeIntervalSinceReferenceDate];
-    NSTimeInterval dt = t - g_dIOStartTime;
-    if (g_bPrepareClose || dt > DLGPlayerIOTimeout) return 1;
+    if (context == NULL) {
+        return 0;
+    }
+    DLGPlayerDecoder *decoder = (__bridge DLGPlayerDecoder *)context;
+    if (decoder!=nil && [decoder shouldInterrupt]) {
+        return 1;
+    }
     return 0;
 }
 
@@ -52,6 +53,10 @@ static int interruptCallback(void *context) {
     SwrContext *m_pAudioSwrContext;
     void *m_pAudioSwrBuffer;
     int m_nAudioSwrBufferSize;
+    
+    NSTimeInterval m_dIOStartTime;
+    BOOL m_bPrepareClose;
+    
 }
 
 @property (atomic) BOOL isEOF;
@@ -219,13 +224,23 @@ static int interruptCallback(void *context) {
     self.duration = (duration == AV_NOPTS_VALUE ? -1 : ((double)duration / AV_TIME_BASE));
     self.metadata = [self findMetadata:fmtctx];
     
-    g_bPrepareClose = FALSE;
-    AVIOInterruptCB icb = {interruptCallback, NULL};
+    m_bPrepareClose = NO;
+
+    AVIOInterruptCB icb = {interruptCallback, (__bridge void *)(self)};
     fmtctx->interrupt_callback = icb;
     
     self.opened = YES;
     
     return YES;
+}
+
+- (BOOL)shouldInterrupt{
+    NSTimeInterval t = [NSDate timeIntervalSinceReferenceDate];
+    NSTimeInterval dt = t - m_dIOStartTime;
+    if (m_bPrepareClose || dt > DLGPlayerIOTimeout){
+        return YES;
+    };
+    return NO;
 }
 
 - (NSDictionary *)findMetadata:(AVFormatContext *)fmtctx {
@@ -346,12 +361,14 @@ static int interruptCallback(void *context) {
 }
 
 #pragma mark - Close
+
 - (void)prepareClose {
-    g_bPrepareClose = TRUE;
+    m_bPrepareClose = YES;
 }
 
 - (void)close {
     if(self.opened){
+        [self prepareClose];
         [self flush:m_pVideoCodecContext frame:m_pVideoFrame];
         [self flush:m_pAudioCodecContext frame:m_pAudioFrame];
         [self closeVideoStream];
@@ -416,7 +433,7 @@ static int interruptCallback(void *context) {
     NSMutableArray *frames = [NSMutableArray arrayWithCapacity:15];
     BOOL reading = YES;
     while (reading) {
-        g_dIOStartTime = [NSDate timeIntervalSinceReferenceDate];
+        m_dIOStartTime = [NSDate timeIntervalSinceReferenceDate];
         int ret = av_read_frame(fmtctx, &packet);
         if (ret < 0) {
             if (ret == AVERROR_EOF) self.isEOF = YES;

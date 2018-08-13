@@ -31,6 +31,7 @@
 - (BOOL)open:(NSString *)url error:(NSError **)error;
 - (void)close;
 - (void)prepareClose;
+- (BOOL)shouldInterrupt;
 - (NSArray *)readFrames;
 - (void)seek:(double)position;
 - (int)videoWidth;
