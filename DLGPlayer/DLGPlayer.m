@@ -293,7 +293,6 @@
 - (void)startFrameReaderThread {
     if (self.frameReaderThread == nil) {
         self.frameReaderThread = [[NSThread alloc] initWithTarget:self selector:@selector(runFrameReader) object:nil];
-        self.frameReaderThread.qualityOfService = NSQualityOfServiceUserInitiated;
         [self.frameReaderThread start];
     }
 }
