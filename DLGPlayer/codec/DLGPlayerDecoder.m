@@ -94,8 +94,22 @@ static int interruptCallback(void *context) {
     }
 
     // Open Input
-    AVFormatContext *fmtctx = NULL;
+    AVFormatContext *fmtctx = avformat_alloc_context();
+    
+    if (!fmtctx){
+        [DLGPlayerUtils createError:error
+                         withDomain:DLGPlayerErrorDomainDecoder
+                            andCode:DLGPlayerErrorCodeCannotOpenInput
+                         andMessage:[DLGPlayerUtils localizedString:@"DLG_PLAYER_STRINGS_CANNOT_OPEN_INPUT"]];
+        return NO;
+    }
+    
+    AVIOInterruptCB icb = {interruptCallback, (__bridge void *)(self)};
+    fmtctx->interrupt_callback = icb;
+    m_dIOStartTime = [NSDate timeIntervalSinceReferenceDate];
+    
     int ret = avformat_open_input(&fmtctx, [url UTF8String], NULL, NULL);
+
     if (ret != 0) {
         if (fmtctx != NULL) avformat_free_context(fmtctx);
         [DLGPlayerUtils createError:error
@@ -225,9 +239,6 @@ static int interruptCallback(void *context) {
     self.metadata = [self findMetadata:fmtctx];
     
     m_bPrepareClose = NO;
-
-    AVIOInterruptCB icb = {interruptCallback, (__bridge void *)(self)};
-    fmtctx->interrupt_callback = icb;
     
     self.opened = YES;
     
@@ -236,7 +247,10 @@ static int interruptCallback(void *context) {
 
 - (BOOL)shouldInterrupt{
     NSTimeInterval t = [NSDate timeIntervalSinceReferenceDate];
-    NSTimeInterval dt = t - m_dIOStartTime;
+    NSTimeInterval dt = 0;
+    if(m_dIOStartTime>0){
+        dt = t - m_dIOStartTime;
+    }
     if (m_bPrepareClose || dt > DLGPlayerIOTimeout){
         return YES;
     };
@@ -367,14 +381,17 @@ static int interruptCallback(void *context) {
 }
 
 - (void)close {
+    [self prepareClose];
     if(self.opened){
-        [self prepareClose];
         [self flush:m_pVideoCodecContext frame:m_pVideoFrame];
         [self flush:m_pAudioCodecContext frame:m_pAudioFrame];
         [self closeVideoStream];
         [self closeAudioStream];
         [self closePictureStream];
-        if (m_pFormatContext != NULL) avformat_close_input(&m_pFormatContext);
+        if (m_pFormatContext != NULL){
+            avformat_close_input(&m_pFormatContext);
+            m_pFormatContext=NULL;
+        }
         self.isYUV = NO;
         self.hasVideo = NO;
         self.hasAudio = NO;
