@@ -260,23 +260,28 @@ static int interruptCallback(void *context) {
 - (NSDictionary *)findMetadata:(AVFormatContext *)fmtctx {
     if (fmtctx == NULL) return nil;
     
-    NSMutableDictionary *md = [NSMutableDictionary dictionary];
+    NSMutableDictionary *resultMeta = [NSMutableDictionary dictionary];
     
     AVDictionary *metadata = fmtctx->metadata;
     NSDictionary *commonMeta = [self dumpMetadata:metadata];
-    if(commonMeta.count>0){
-        [md addEntriesFromDictionary:commonMeta];
-    }
     
     for (int i = 0; i < fmtctx->nb_streams; i++){
         AVDictionary *metadata = fmtctx->streams[i]->metadata;
         NSDictionary *streamMeta = [self dumpMetadata:metadata];
-        if(streamMeta.count>0){
-            [md addEntriesFromDictionary:streamMeta];
-        }
+        [streamMeta enumerateKeysAndObjectsUsingBlock:^(id  _Nonnull key, id  _Nonnull obj, BOOL * _Nonnull stop) {
+            if([key isKindOfClass:[NSString class]]){
+                [resultMeta setObject:obj forKey:[(NSString *)key lowercaseString]];
+            }
+        }];
     }
+    
+    [commonMeta enumerateKeysAndObjectsUsingBlock:^(id  _Nonnull key, id  _Nonnull obj, BOOL * _Nonnull stop) {
+        if([key isKindOfClass:[NSString class]]){
+            [resultMeta setObject:obj forKey:[(NSString *)key lowercaseString]];
+        }
+    }];
 
-    return md;
+    return resultMeta;
 }
 
 - (NSDictionary *)dumpMetadata:(AVDictionary *)metadata{
